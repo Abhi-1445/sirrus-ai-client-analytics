@@ -1,0 +1,142 @@
+-----Check yesterday's call health by client before building the notebook version.
+
+USE sirrus_tcg;
+
+SELECT
+    c.company_name,
+    c.city,
+    c.account_manager,
+    COUNT(ca.call_id) AS total_calls,
+    SUM(CASE WHEN ca.call_status = 'Dropped' THEN 1 ELSE 0 END) AS dropped_calls,
+    SUM(CASE WHEN ca.ai_summary_status = 'Failed' THEN 1 ELSE 0 END) AS ai_failed,
+    ROUND(SUM(CASE WHEN ca.ai_summary_status = 'Failed' THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(ca.call_id), 0), 1) AS failure_rate_pct
+FROM clients c
+LEFT JOIN calls ca ON c.client_id = ca.client_id
+    AND ca.call_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+GROUP BY c.client_id, c.company_name, c.city, c.account_manager
+ORDER BY failure_rate_pct DESC;
+
+------Check which clients have gone quiet before building the notebook output.
+
+USE sirrus_tcg;
+
+SELECT
+    c.company_name,
+    c.city,
+    c.account_manager,
+    MAX(u.login_time) AS last_login,
+    DATEDIFF(NOW(), MAX(u.login_time)) AS days_silent,
+    COUNT(DISTINCT DATE(u.login_time)) AS days_active_last_30,
+    CASE
+        WHEN DATEDIFF(NOW(), MAX(u.login_time)) > 14 THEN 'HIGH RISK'
+        WHEN DATEDIFF(NOW(), MAX(u.login_time)) > 7 THEN 'MEDIUM RISK'
+        ELSE 'ACTIVE'
+    END AS churn_risk
+FROM clients c
+LEFT JOIN user_logins u ON c.client_id = u.client_id
+    AND u.login_time >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+GROUP BY c.client_id, c.company_name, c.city, c.account_manager
+ORDER BY days_silent DESC;
+
+-------Preview the pair score distribution before validating it in Python.
+
+USE sirrus_tcg;
+
+SELECT
+    CASE
+        WHEN pair_score <= 25 THEN '0-25 Low'
+        WHEN pair_score <= 50 THEN '26-50 Medium'
+        WHEN pair_score <= 75 THEN '51-75 High'
+        ELSE '76-100 Very High'
+    END AS score_bucket,
+    COUNT(*) AS calls_in_bucket,
+    ROUND(AVG(call_duration_sec)/60, 1) AS avg_duration_min,
+    MIN(pair_score) AS min_score,
+    MAX(pair_score) AS max_score
+FROM calls
+GROUP BY score_bucket
+ORDER BY min_score;
+
+--------Measure how large the Telephone partner and AI-summary failure problem is before converting it to revenue impact.
+
+USE sirrus_tcg;
+
+SELECT
+    c.company_name,
+    c.city,
+    COUNT(ca.call_id) AS total_calls,
+    SUM(CASE WHEN ca.ai_summary_status = 'Failed' THEN 1 ELSE 0 END) AS ai_failed,
+    SUM(CASE WHEN ca.call_status = 'Dropped' THEN 1 ELSE 0 END) AS dropped_calls,
+    ROUND(SUM(CASE WHEN ca.ai_summary_status = 'Failed' THEN 1 ELSE 0 END) * 100.0 / COUNT(ca.call_id), 1) AS fail_pct
+FROM calls ca
+JOIN clients c ON ca.client_id = c.client_id
+GROUP BY c.client_id, c.company_name, c.city
+ORDER BY fail_pct DESC;
+
+------Check whether longer calls are associated with better AI pair scores.
+
+USE sirrus_tcg;
+
+SELECT
+    CASE
+        WHEN call_duration_sec < 120 THEN 'Under 2 min'
+        WHEN call_duration_sec < 300 THEN '2-5 min'
+        WHEN call_duration_sec < 600 THEN '5-10 min'
+        ELSE '10+ min'
+    END AS duration_bucket,
+    COUNT(*) AS total_calls,
+    ROUND(AVG(pair_score), 1) AS avg_pair_score,
+    ROUND(MIN(pair_score), 1) AS min_score,
+    ROUND(MAX(pair_score), 1) AS max_score
+FROM calls
+GROUP BY duration_bucket
+ORDER BY avg_pair_score;
+
+-------See module usage by client before turning it into a heatmap in Python.
+
+USE sirrus_tcg;
+
+SELECT
+    c.company_name,
+    c.city,
+    SUM(CASE WHEN fl.module = 'PreSales'  THEN 1 ELSE 0 END) AS presales,
+    SUM(CASE WHEN fl.module = 'Marketing' THEN 1 ELSE 0 END) AS marketing,
+    SUM(CASE WHEN fl.module = 'PostSales' THEN 1 ELSE 0 END) AS postsales,
+    COUNT(DISTINCT fl.feature_name) AS unique_features,
+    COUNT(DISTINCT fl.user_id) AS active_users
+FROM clients c
+LEFT JOIN feature_logs fl ON c.client_id = fl.client_id
+    AND fl.used_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+GROUP BY c.client_id, c.company_name, c.city
+ORDER BY unique_features DESC;
+
+-------Preview first-30-day activity for new clients before calculating onboarding health in Python.
+
+USE sirrus_tcg;
+
+SELECT
+    c.company_name,
+    c.city,
+    c.onboarding_date,
+    COUNT(DISTINCT ca.call_id) AS calls_30d,
+    COUNT(DISTINCT fl.feature_name) AS features_30d
+FROM clients c
+LEFT JOIN calls ca ON c.client_id = ca.client_id
+    AND ca.call_date BETWEEN c.onboarding_date AND DATE_ADD(c.onboarding_date, INTERVAL 30 DAY)
+LEFT JOIN feature_logs fl ON c.client_id = fl.client_id
+    AND fl.used_at BETWEEN c.onboarding_date AND DATE_ADD(c.onboarding_date, INTERVAL 30 DAY)
+GROUP BY c.client_id, c.company_name, c.city, c.onboarding_date
+ORDER BY calls_30d DESC;
+
+------Identify the biggest complaint categories before building the Python summary and chart.
+
+USE sirrus_tcg;
+
+SELECT
+    t.category,
+    COUNT(*) AS total_tickets,
+    ROUND(AVG(TIMESTAMPDIFF(HOUR, t.created_at, t.resolved_at)), 1) AS avg_resolve_hrs,
+    SUM(CASE WHEN t.status = 'Open' THEN 1 ELSE 0 END) AS still_open
+FROM tickets t
+GROUP BY t.category
+ORDER BY total_tickets DESC;
